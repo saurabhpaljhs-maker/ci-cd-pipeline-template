@@ -24,6 +24,7 @@ spec:
       containers:
         - name: demo-app
           image: IMAGE_PLACEHOLDER  # Replaced by Jenkins pipeline
+          imagePullPolicy: Always   # ← correct jagah: container ke andar
           ports:
             - containerPort: 8080
           envFrom:
@@ -49,5 +50,3 @@ spec:
               port: 8080
             initialDelaySeconds: 30
             periodSeconds: 30
-      # Never pull cached image — always get exact tag
-      imagePullPolicy: Always
