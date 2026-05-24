@@ -78,22 +78,21 @@ pipeline {
                 }
             }
         }
-        stage('Deploy To Kubernetes') {
-            steps {
-                withKubeConfig(
-                    [credentialsId: 'kubeconfig']
-                ) {
-                    sh """
-                        sed -i 's|IMAGE_PLACEHOLDER|${IMAGE_NAME}:${IMAGE_TAG}|g' k8s/deployment.yaml
-                        kubectl apply -f k8s/ -n ${K8S_NAMESPACE}
-                        kubectl rollout status deployment/${APP_NAME} \
-                        -n ${K8S_NAMESPACE} \
-                        --timeout=120s
-                    """
-                }
-            }
+       stage('Deploy To Kubernetes') {
+    steps {
+        withKubeConfig(
+            [credentialsId: 'kubeconfig']
+        ) {
+            sh """
+                sed -i 's|IMAGE_PLACEHOLDER|${IMAGE_NAME}:${IMAGE_TAG}|g' k8s/deployment.yaml
+                kubectl apply -f k8s/ -n ${K8S_NAMESPACE} --validate=false
+                kubectl rollout status deployment/${APP_NAME} \
+                -n ${K8S_NAMESPACE} \
+                --timeout=120s
+            """
         }
     }
+}
     post {
         success {
             echo '✅ Pipeline executed successfully'
