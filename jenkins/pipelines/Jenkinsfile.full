@@ -8,11 +8,10 @@ pipeline {
 
     environment {
         APP_NAME        = 'demo-app'
-        DOCKER_REGISTRY = 'yourdockerhubusername'
+        DOCKER_REGISTRY = 'saurabhpaljhs'
         IMAGE_NAME      = "${DOCKER_REGISTRY}/${APP_NAME}"
-        IMAGE_TAG       = "${BUILD_NUMBER}-${GIT_COMMIT.take(7)}"
-        K8S_NAMESPACE   = 'production'
-        SLACK_CHANNEL   = '#deployments'
+        IMAGE_TAG       = "${BUILD_NUMBER}"
+        K8S_NAMESPACE   = 'default'
         SONAR_PROJECT   = 'demo-app'
     }
 
@@ -91,7 +90,7 @@ pipeline {
         stage('Docker Push') {
             steps {
                 script {
-                    docker.withRegistry('https://registry.hub.docker.com', 'dockerhub-credentials') {
+                    docker.withRegistry('https://registry.hub.docker.com', 'dockerhub') {
                         docker.image("${IMAGE_NAME}:${IMAGE_TAG}").push()
                         docker.image("${IMAGE_NAME}:latest").push()
                     }
@@ -102,7 +101,7 @@ pipeline {
         stage('Deploy to Kubernetes') {
             when { branch 'main' }
             steps {
-                withKubeConfig([credentialsId: 'k8s-kubeconfig']) {
+                withKubeConfig([credentialsId: 'kubeconfig']) {
                     sh """
                         # Update image tag in deployment
                         sed -i 's|IMAGE_PLACEHOLDER|${IMAGE_NAME}:${IMAGE_TAG}|g' k8s/deployment.yaml
@@ -142,54 +141,8 @@ pipeline {
         }
     }
 
-    post {
-        success {
-            slackSend(
-                channel: env.SLACK_CHANNEL,
-                color:   'good',
-                message: """✅ *DEPLOYED SUCCESSFULLY*
-App: `${APP_NAME}` | Build: `#${BUILD_NUMBER}`
-Image: `${IMAGE_NAME}:${IMAGE_TAG}`
-Branch: `${env.BRANCH_NAME}` | Author: `${env.GIT_AUTHOR}`
-Commit: _${env.GIT_MESSAGE}_
-<${BUILD_URL}|View Build>"""
-            )
-        }
-
-        failure {
-            script {
-                // Auto rollback on deploy failure
-                if (env.BRANCH_NAME == 'main') {
-                    withKubeConfig([credentialsId: 'k8s-kubeconfig']) {
-                        sh """
-                            echo "🔄 Rolling back deployment..."
-                            kubectl rollout undo deployment/${APP_NAME} -n ${K8S_NAMESPACE}
-                            kubectl rollout status deployment/${APP_NAME} -n ${K8S_NAMESPACE} --timeout=60s
-                        """
-                    }
-                }
-            }
-            slackSend(
-                channel: env.SLACK_CHANNEL,
-                color:   'danger',
-                message: """❌ *PIPELINE FAILED*
-App: `${APP_NAME}` | Build: `#${BUILD_NUMBER}`
-Branch: `${env.BRANCH_NAME}` | Stage: `${env.STAGE_NAME}`
-Rollback: triggered automatically
-<${BUILD_URL}/console|View Logs>"""
-            )
-        }
-
-        unstable {
-            slackSend(
-                channel: env.SLACK_CHANNEL,
-                color:   'warning',
-                message: "⚠️ *UNSTABLE BUILD* — `${APP_NAME}` #${BUILD_NUMBER} — Test failures detected. <${BUILD_URL}|Details>"
-            )
-        }
-
-        always {
-            cleanWs()
-        }
+  post {
+    always {
+        cleanWs()
     }
 }
