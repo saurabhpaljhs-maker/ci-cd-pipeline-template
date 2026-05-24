@@ -3,84 +3,57 @@
 // Author: Saurabh Pal | DevOps Engineer
 // Production Ready — Minimal Changes Only
 // ============================================================
-
 pipeline {
-
     agent any
-
     environment {
-
         APP_NAME        = 'demo-app'
         DOCKER_REGISTRY = 'saurabhpaljhs'
-
         IMAGE_NAME      = "${DOCKER_REGISTRY}/${APP_NAME}"
         IMAGE_TAG       = "${BUILD_NUMBER}-${GIT_COMMIT.take(7)}"
-
         K8S_NAMESPACE   = 'production'
-
         SONAR_PROJECT   = 'demo-app'
     }
-
     tools {
-
         maven 'Maven-3.9'
         jdk   'JDK-21'
     }
-
     options {
-
         timestamps()
-
         timeout(
             time: 30,
             unit: 'MINUTES'
         )
     }
-
     stages {
-
         stage('Checkout') {
-
             steps {
-
                 checkout scm
             }
         }
-
         stage('Build') {
-
             steps {
-
                 sh 'mvn clean package -DskipTests=false'
             }
         }
-
         stage('SonarCloud Scan') {
-
             steps {
-
                 withSonarQubeEnv('sonarcloud') {
-
                     sh """
                         mvn sonar:sonar \
                             -Dsonar.projectKey=${SONAR_PROJECT} \
-                            -Dsonar.organization=saurabhpaljhs
+                            -Dsonar.organization=saurabhpaljhs-maker \
+                            -Dsonar.host.url=https://sonarcloud.io
                     """
                 }
             }
         }
-
         stage('Docker Build') {
-
             steps {
-
                 script {
-
                     docker.build(
                         "${IMAGE_NAME}:${IMAGE_TAG}",
                         "-f docker/Dockerfile ."
                     )
-
                     docker.build(
                         "${IMAGE_NAME}:latest",
                         "-f docker/Dockerfile ."
@@ -88,22 +61,16 @@ pipeline {
                 }
             }
         }
-
         stage('Docker Push') {
-
             steps {
-
                 script {
-
                     docker.withRegistry(
                         'https://registry.hub.docker.com',
                         'dockerhub'
                     ) {
-
                         docker.image(
                             "${IMAGE_NAME}:${IMAGE_TAG}"
                         ).push()
-
                         docker.image(
                             "${IMAGE_NAME}:latest"
                         ).push()
@@ -111,21 +78,14 @@ pipeline {
                 }
             }
         }
-
         stage('Deploy To Kubernetes') {
-
             steps {
-
                 withKubeConfig(
                     [credentialsId: 'kubeconfig']
                 ) {
-
                     sh """
-
                         sed -i 's|IMAGE_PLACEHOLDER|${IMAGE_NAME}:${IMAGE_TAG}|g' k8s/deployment.yaml
-
                         kubectl apply -f k8s/ -n ${K8S_NAMESPACE}
-
                         kubectl rollout status deployment/${APP_NAME} \
                         -n ${K8S_NAMESPACE} \
                         --timeout=120s
@@ -134,21 +94,14 @@ pipeline {
             }
         }
     }
-
     post {
-
         success {
-
             echo '✅ Pipeline executed successfully'
         }
-
         failure {
-
             echo '❌ Pipeline failed'
         }
-
         always {
-
             cleanWs()
         }
     }
