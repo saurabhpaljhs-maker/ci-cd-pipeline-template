@@ -19,7 +19,7 @@ public class App {
         return Map.of(
             "app",     "demo-app",
             "status",  "running",
-            "version", System.getenv().getOrDefault("APP_VERSION", "1.0.0")
+            "version", "1.0.0"
         );
     }
 
