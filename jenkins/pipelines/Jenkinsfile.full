@@ -11,7 +11,7 @@ pipeline {
         IMAGE_NAME      = "${DOCKER_REGISTRY}/${APP_NAME}"
         IMAGE_TAG       = "${BUILD_NUMBER}-${GIT_COMMIT.take(7)}"
         K8S_NAMESPACE   = 'production'
-        SONAR_PROJECT   = 'demo-app'
+        SONAR_PROJECT   = 'saurabhpaljhs-maker_ci-cd-pipeline-template'
     }
     tools {
         maven 'Maven-3.9'
