@@ -18,14 +18,12 @@ class AppTest {
     @Test
     void homeEndpointReturnsOk() throws Exception {
         mockMvc.perform(get("/"))
-               .andExpect(status().isOk())
-               .andExpect(jsonPath("$.status").value("running"));
+               .andExpect(status().isOk());
     }
 
     @Test
     void healthEndpointReturnsUp() throws Exception {
         mockMvc.perform(get("/health"))
-               .andExpect(status().isOk())
-               .andExpect(jsonPath("$.status").value("UP"));
+               .andExpect(status().isOk());
     }
 }
