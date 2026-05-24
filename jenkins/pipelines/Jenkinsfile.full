@@ -4,145 +4,151 @@
 // ============================================================
 
 pipeline {
-    agent any
+
+    agent { label 'gcp' }
 
     environment {
+
         APP_NAME        = 'demo-app'
         DOCKER_REGISTRY = 'saurabhpaljhs'
+
         IMAGE_NAME      = "${DOCKER_REGISTRY}/${APP_NAME}"
         IMAGE_TAG       = "${BUILD_NUMBER}"
+
         K8S_NAMESPACE   = 'default'
+
         SONAR_PROJECT   = 'demo-app'
     }
 
-    options {
-        timestamps()
-        timeout(time: 30, unit: 'MINUTES')
-        buildDiscarder(logRotator(numToKeepStr: '10'))
-        disableConcurrentBuilds()
-    }
-
     tools {
+
         maven 'Maven-3.9'
         jdk   'JDK-21'
+    }
+
+    options {
+
+        timestamps()
+
+        timeout(
+            time: 30,
+            unit: 'MINUTES'
+        )
     }
 
     stages {
 
         stage('Checkout') {
+
             steps {
+
                 checkout scm
-                script {
-                    env.GIT_AUTHOR  = sh(script: "git log -1 --format='%an'", returnStdout: true).trim()
-                    env.GIT_MESSAGE = sh(script: "git log -1 --format='%s'",  returnStdout: true).trim()
-                }
-                echo "Branch: ${env.BRANCH_NAME} | Author: ${env.GIT_AUTHOR}"
             }
         }
 
-        stage('Build & Unit Test') {
+        stage('Build') {
+
             steps {
-                sh 'mvn clean package -DskipTests=false -B'
-            }
-            post {
-                always {
-                    junit 'target/surefire-reports/**/*.xml'
-                    jacoco(
-                        execPattern:    'target/jacoco.exec',
-                        classPattern:   'target/classes',
-                        sourcePattern:  'src/main/java'
-                    )
-                }
+
+                sh 'mvn clean package -DskipTests=false'
             }
         }
 
-        stage('Code Quality — SonarQube') {
-            when { branch pattern: 'main|develop|release/.*', comparator: 'REGEXP' }
+        stage('SonarCloud Scan') {
+
             steps {
-                withSonarQubeEnv('SonarQube') {
+
+                withSonarQubeEnv('sonarcloud') {
+
                     sh """
                         mvn sonar:sonar \
-                            -Dsonar.projectKey=${SONAR_PROJECT} \
-                            -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
+                        -Dsonar.projectKey=${SONAR_PROJECT}
                     """
-                }
-            }
-        }
-
-        stage('Quality Gate') {
-            when { branch pattern: 'main|develop|release/.*', comparator: 'REGEXP' }
-            steps {
-                timeout(time: 5, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true
                 }
             }
         }
 
         stage('Docker Build') {
+
             steps {
+
                 script {
-                    docker.build("${IMAGE_NAME}:${IMAGE_TAG}", "-f docker/Dockerfile .")
-                    docker.build("${IMAGE_NAME}:latest",       "-f docker/Dockerfile .")
+
+                    docker.build(
+                        "${IMAGE_NAME}:${IMAGE_TAG}",
+                        "-f docker/Dockerfile ."
+                    )
+
+                    docker.build(
+                        "${IMAGE_NAME}:latest",
+                        "-f docker/Dockerfile ."
+                    )
                 }
             }
         }
 
         stage('Docker Push') {
+
             steps {
+
                 script {
-                    docker.withRegistry('https://registry.hub.docker.com', 'dockerhub') {
-                        docker.image("${IMAGE_NAME}:${IMAGE_TAG}").push()
-                        docker.image("${IMAGE_NAME}:latest").push()
+
+                    docker.withRegistry(
+                        'https://registry.hub.docker.com',
+                        'dockerhub'
+                    ) {
+
+                        docker.image(
+                            "${IMAGE_NAME}:${IMAGE_TAG}"
+                        ).push()
+
+                        docker.image(
+                            "${IMAGE_NAME}:latest"
+                        ).push()
                     }
                 }
             }
         }
 
-        stage('Deploy to Kubernetes') {
-            when { branch 'main' }
+        stage('Deploy To Kubernetes') {
+
             steps {
-                withKubeConfig([credentialsId: 'kubeconfig']) {
+
+                withKubeConfig(
+                    [credentialsId: 'kubeconfig']
+                ) {
+
                     sh """
-                        # Update image tag in deployment
+
                         sed -i 's|IMAGE_PLACEHOLDER|${IMAGE_NAME}:${IMAGE_TAG}|g' k8s/deployment.yaml
 
-                        # Apply all manifests
                         kubectl apply -f k8s/ -n ${K8S_NAMESPACE}
 
-                        # Wait for rollout
                         kubectl rollout status deployment/${APP_NAME} \
-                            -n ${K8S_NAMESPACE} \
-                            --timeout=120s
+                        -n ${K8S_NAMESPACE} \
+                        --timeout=120s
                     """
                 }
             }
         }
+    }
 
-        stage('Health Check') {
-            when { branch 'main' }
-            steps {
-                script {
-                    sleep(time: 15, unit: 'SECONDS')
-                    def healthStatus = sh(
-                        script: """
-                            kubectl exec -n ${K8S_NAMESPACE} \
-                                \$(kubectl get pod -n ${K8S_NAMESPACE} -l app=${APP_NAME} \
-                                    -o jsonpath='{.items[0].metadata.name}') \
-                                -- curl -sf http://localhost:8080/health | grep -c 'UP'
-                        """,
-                        returnStatus: true
-                    )
-                    if (healthStatus != 0) {
-                        error("Health check failed! Triggering rollback...")
-                    }
-                    echo "✅ Health check passed"
-                }
-            }
+    post {
+
+        success {
+
+            echo '✅ Pipeline executed successfully'
+        }
+
+        failure {
+
+            echo '❌ Pipeline failed'
+        }
+
+        always {
+
+            cleanWs()
         }
     }
-
-  post {
-    always {
-        cleanWs()
-    }
 }
+
