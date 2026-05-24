@@ -1,11 +1,9 @@
-cat > src/main/java/com/devops/demo/App.java << 'EOF'
 package com.devops.demo;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
-import java.util.Map;
 
 @SpringBootApplication
 @RestController
@@ -16,17 +14,12 @@ public class App {
     }
 
     @GetMapping("/")
-    public Map<String, String> home() {
-        return Map.of(
-            "app",     "demo-app",
-            "status",  "running",
-            "version", "1.0.0"
-        );
+    public String home() {
+        return "Hello from CI/CD Pipeline!";
     }
 
     @GetMapping("/health")
-    public Map<String, String> health() {
-        return Map.of("status", "UP");
+    public String health() {
+        return "UP";
     }
 }
-EOF
