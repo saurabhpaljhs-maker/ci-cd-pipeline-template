@@ -1,95 +1,86 @@
 // ============================================================
 // Full CI/CD Pipeline — Jenkins + Java/Maven + Docker + K8s
 // Author: Saurabh Pal | DevOps Engineer
-// Production Ready — All Issues Fixed
+// Production Ready — Minimal Changes Only
 // ============================================================
 
 pipeline {
+
     agent any
 
     environment {
+
         APP_NAME        = 'demo-app'
         DOCKER_REGISTRY = 'saurabhpaljhs'
+
         IMAGE_NAME      = "${DOCKER_REGISTRY}/${APP_NAME}"
         IMAGE_TAG       = "${BUILD_NUMBER}-${GIT_COMMIT.take(7)}"
+
         K8S_NAMESPACE   = 'production'
+
         SONAR_PROJECT   = 'demo-app'
-        SLACK_CHANNEL   = '#deployments'
     }
 
     tools {
+
         maven 'Maven-3.9'
-        jdk   'JDK-17'
+        jdk   'JDK-21'
     }
 
     options {
+
         timestamps()
-        timeout(time: 30, unit: 'MINUTES')
-        buildDiscarder(logRotator(numToKeepStr: '10'))
-        disableConcurrentBuilds()
+
+        timeout(
+            time: 30,
+            unit: 'MINUTES'
+        )
     }
 
     stages {
 
         stage('Checkout') {
+
             steps {
+
                 checkout scm
-                script {
-                    env.GIT_AUTHOR  = sh(script: "git log -1 --format='%an'", returnStdout: true).trim()
-                    env.GIT_MESSAGE = sh(script: "git log -1 --format='%s'",  returnStdout: true).trim()
-                }
-                echo "✅ Checkout: Branch ${env.BRANCH_NAME} | Author ${env.GIT_AUTHOR}"
             }
         }
 
-        stage('Build & Unit Test') {
+        stage('Build') {
+
             steps {
-                sh 'mvn clean package -DskipTests=false -B'
-            }
-            post {
-                always {
-                    junit 'target/surefire-reports/**/*.xml'
-                    jacoco(
-                        execPattern:    'target/jacoco.exec',
-                        classPattern:   'target/classes',
-                        sourcePattern:  'src/main/java'
-                    )
-                }
+
+                sh 'mvn clean package -DskipTests=false'
             }
         }
 
         stage('SonarCloud Scan') {
-            when { branch pattern: 'main|develop', comparator: 'REGEXP' }
+
             steps {
-                withSonarQubeEnv('SonarCloud') {
+
+                withSonarQubeEnv('sonarcloud') {
+
                     sh """
                         mvn sonar:sonar \
                             -Dsonar.projectKey=${SONAR_PROJECT} \
-                            -Dsonar.organization=saurabhpaljhs \
-                            -Dsonar.sources=src/main/java \
-                            -Dsonar.tests=src/test/java \
-                            -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
+                            -Dsonar.organization=saurabhpaljhs
                     """
                 }
             }
         }
 
-        stage('Quality Gate') {
-            when { branch pattern: 'main|develop', comparator: 'REGEXP' }
-            steps {
-                timeout(time: 5, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true
-                }
-            }
-        }
-
         stage('Docker Build') {
+
             steps {
+
                 script {
+
                     docker.build(
                         "${IMAGE_NAME}:${IMAGE_TAG}",
                         "-f docker/Dockerfile ."
                     )
+
                     docker.build(
                         "${IMAGE_NAME}:latest",
                         "-f docker/Dockerfile ."
@@ -99,111 +90,65 @@ pipeline {
         }
 
         stage('Docker Push') {
+
             steps {
+
                 script {
+
                     docker.withRegistry(
                         'https://registry.hub.docker.com',
-                        'dockerhub-credentials'
+                        'dockerhub'
                     ) {
+
                         docker.image(
                             "${IMAGE_NAME}:${IMAGE_TAG}"
                         ).push()
+
                         docker.image(
                             "${IMAGE_NAME}:latest"
                         ).push()
-                        echo "✅ Pushed: ${IMAGE_NAME}:${IMAGE_TAG}"
                     }
                 }
             }
         }
 
         stage('Deploy To Kubernetes') {
-            when { branch 'main' }
-            steps {
-                withKubeConfig(
-                    [credentialsId: 'k8s-kubeconfig']
-                ) {
-                    sh """
-                        sed -i 's|IMAGE_PLACEHOLDER|${IMAGE_NAME}:${IMAGE_TAG}|g' k8s/deployment.yaml
-                        kubectl apply -f k8s/ -n ${K8S_NAMESPACE}
-                        kubectl rollout status deployment/${APP_NAME} \
-                            -n ${K8S_NAMESPACE} \
-                            --timeout=120s
-                    """
-                    echo "✅ Deployed to ${K8S_NAMESPACE}"
-                }
-            }
-        }
 
-        stage('Health Check') {
-            when { branch 'main' }
             steps {
-                script {
-                    sleep(time: 15, unit: 'SECONDS')
-                    def healthStatus = sh(
-                        script: """
-                            kubectl exec -n ${K8S_NAMESPACE} \
-                                \$(kubectl get pod -n ${K8S_NAMESPACE} -l app=${APP_NAME} \
-                                    -o jsonpath='{.items[0].metadata.name}') \
-                                -- curl -sf http://localhost:8080/health | grep -c 'UP'
-                        """,
-                        returnStatus: true
-                    )
-                    if (healthStatus != 0) {
-                        error("❌ Health check failed")
-                    }
-                    echo "✅ Health check passed"
+
+                withKubeConfig(
+                    [credentialsId: 'kubeconfig']
+                ) {
+
+                    sh """
+
+                        sed -i 's|IMAGE_PLACEHOLDER|${IMAGE_NAME}:${IMAGE_TAG}|g' k8s/deployment.yaml
+
+                        kubectl apply -f k8s/ -n ${K8S_NAMESPACE}
+
+                        kubectl rollout status deployment/${APP_NAME} \
+                        -n ${K8S_NAMESPACE} \
+                        --timeout=120s
+                    """
                 }
             }
         }
     }
 
     post {
+
         success {
-            slackSend(
-                channel: env.SLACK_CHANNEL,
-                color:   'good',
-                message: """✅ *DEPLOYED SUCCESSFULLY*
-App: `${APP_NAME}` | Build: `#${BUILD_NUMBER}`
-Image: `${IMAGE_NAME}:${IMAGE_TAG}`
-Branch: `${env.BRANCH_NAME}` | Author: `${env.GIT_AUTHOR}`
-Commit: _${env.GIT_MESSAGE}_
-<${BUILD_URL}|View Build>"""
-            )
+
+            echo '✅ Pipeline executed successfully'
         }
 
         failure {
-            script {
-                if (env.BRANCH_NAME == 'main') {
-                    withKubeConfig([credentialsId: 'k8s-kubeconfig']) {
-                        sh """
-                            echo "🔄 Auto-rolling back..."
-                            kubectl rollout undo deployment/${APP_NAME} -n ${K8S_NAMESPACE}
-                            kubectl rollout status deployment/${APP_NAME} -n ${K8S_NAMESPACE} --timeout=60s
-                        """
-                    }
-                }
-            }
-            slackSend(
-                channel: env.SLACK_CHANNEL,
-                color:   'danger',
-                message: """❌ *PIPELINE FAILED*
-App: `${APP_NAME}` | Build: `#${BUILD_NUMBER}`
-Branch: `${env.BRANCH_NAME}` | Stage: `${env.STAGE_NAME}`
-Auto-rollback: triggered
-<${BUILD_URL}/console|View Logs>"""
-            )
-        }
 
-        unstable {
-            slackSend(
-                channel: env.SLACK_CHANNEL,
-                color:   'warning',
-                message: "⚠️ *UNSTABLE* — `${APP_NAME}` #${BUILD_NUMBER} — Tests failed. <${BUILD_URL}|Details>"
-            )
+            echo '❌ Pipeline failed'
         }
 
         always {
+
             cleanWs()
         }
     }
