@@ -50,7 +50,7 @@ pipeline {
 
             steps {
 
-                sh 'mvn clean package -DskipTests=false'
+                sh 'cd app && mvn clean package -DskipTests=false'
             }
         }
 
@@ -61,7 +61,7 @@ pipeline {
                 withSonarQubeEnv('sonarcloud') {
 
                     sh """
-                        mvn sonar:sonar \
+                        cd app && mvn sonar:sonar
                         -Dsonar.projectKey=${SONAR_PROJECT}
                     """
                 }
