@@ -1,0 +1,86 @@
+// ============================================================
+// CD-Only Pipeline — Deploy existing Docker image to K8s
+// Trigger this after CI pipeline completes successfully
+// ============================================================
+
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'IMAGE_TAG',     defaultValue: 'latest',     description: 'Docker image tag to deploy')
+        choice(name: 'ENVIRONMENT',   choices: ['staging', 'production'], description: 'Target environment')
+        booleanParam(name: 'ROLLBACK', defaultValue: false,        description: 'Rollback to previous version?')
+    }
+
+    environment {
+        APP_NAME        = 'demo-app'
+        DOCKER_REGISTRY = 'yourdockerhubusername'
+        IMAGE_NAME      = "${DOCKER_REGISTRY}/${APP_NAME}"
+        K8S_NAMESPACE   = "${params.ENVIRONMENT}"
+        SLACK_CHANNEL   = '#deployments'
+    }
+
+    stages {
+
+        stage('Validate') {
+            steps {
+                script {
+                    echo "Deploying: ${IMAGE_NAME}:${params.IMAGE_TAG} → ${params.ENVIRONMENT}"
+                    if (params.ENVIRONMENT == 'production' && !currentBuild.description?.contains('approved')) {
+                        input message: "Deploy to PRODUCTION?", ok: "Yes, deploy"
+                    }
+                }
+            }
+        }
+
+        stage('Rollback') {
+            when { expression { params.ROLLBACK == true } }
+            steps {
+                withKubeConfig([credentialsId: 'k8s-kubeconfig']) {
+                    sh """
+                        kubectl rollout undo deployment/${APP_NAME} -n ${K8S_NAMESPACE}
+                        kubectl rollout status deployment/${APP_NAME} -n ${K8S_NAMESPACE} --timeout=120s
+                    """
+                }
+            }
+        }
+
+        stage('Deploy') {
+            when { expression { params.ROLLBACK == false } }
+            steps {
+                withKubeConfig([credentialsId: 'k8s-kubeconfig']) {
+                    sh """
+                        sed -i 's|IMAGE_PLACEHOLDER|${IMAGE_NAME}:${params.IMAGE_TAG}|g' k8s/deployment.yaml
+                        kubectl apply -f k8s/ -n ${K8S_NAMESPACE}
+                        kubectl rollout status deployment/${APP_NAME} -n ${K8S_NAMESPACE} --timeout=120s
+                    """
+                }
+            }
+        }
+
+        stage('Smoke Test') {
+            steps {
+                withKubeConfig([credentialsId: 'k8s-kubeconfig']) {
+                    sh """
+                        sleep 10
+                        POD=\$(kubectl get pod -n ${K8S_NAMESPACE} -l app=${APP_NAME} -o jsonpath='{.items[0].metadata.name}')
+                        kubectl exec -n ${K8S_NAMESPACE} \$POD -- curl -sf http://localhost:8080/health
+                        echo "Smoke test passed ✅"
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            slackSend channel: env.SLACK_CHANNEL, color: 'good',
+                message: "✅ Deployed `${APP_NAME}:${params.IMAGE_TAG}` to *${params.ENVIRONMENT}* — Build #${BUILD_NUMBER}"
+        }
+        failure {
+            slackSend channel: env.SLACK_CHANNEL, color: 'danger',
+                message: "❌ Deploy FAILED `${APP_NAME}` to *${params.ENVIRONMENT}* — <${BUILD_URL}/console|Logs>"
+        }
+        always { cleanWs() }
+    }
+}

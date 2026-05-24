@@ -1,0 +1,195 @@
+// ============================================================
+// Full CI/CD Pipeline — Jenkins + Java/Maven + Docker + K8s
+// Author: Your Name | DevOps Engineer
+// ============================================================
+
+pipeline {
+    agent any
+
+    environment {
+        APP_NAME        = 'demo-app'
+        DOCKER_REGISTRY = 'yourdockerhubusername'
+        IMAGE_NAME      = "${DOCKER_REGISTRY}/${APP_NAME}"
+        IMAGE_TAG       = "${BUILD_NUMBER}-${GIT_COMMIT.take(7)}"
+        K8S_NAMESPACE   = 'production'
+        SLACK_CHANNEL   = '#deployments'
+        SONAR_PROJECT   = 'demo-app'
+    }
+
+    options {
+        timestamps()
+        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        disableConcurrentBuilds()
+    }
+
+    tools {
+        maven 'Maven-3.9'
+        jdk   'JDK-17'
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    env.GIT_AUTHOR  = sh(script: "git log -1 --format='%an'", returnStdout: true).trim()
+                    env.GIT_MESSAGE = sh(script: "git log -1 --format='%s'",  returnStdout: true).trim()
+                }
+                echo "Branch: ${env.BRANCH_NAME} | Author: ${env.GIT_AUTHOR}"
+            }
+        }
+
+        stage('Build & Unit Test') {
+            steps {
+                sh 'mvn clean package -DskipTests=false -B'
+            }
+            post {
+                always {
+                    junit 'target/surefire-reports/**/*.xml'
+                    jacoco(
+                        execPattern:    'target/jacoco.exec',
+                        classPattern:   'target/classes',
+                        sourcePattern:  'src/main/java'
+                    )
+                }
+            }
+        }
+
+        stage('Code Quality — SonarQube') {
+            when { branch pattern: 'main|develop|release/.*', comparator: 'REGEXP' }
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    sh """
+                        mvn sonar:sonar \
+                            -Dsonar.projectKey=${SONAR_PROJECT} \
+                            -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
+                    """
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            when { branch pattern: 'main|develop|release/.*', comparator: 'REGEXP' }
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                script {
+                    docker.build("${IMAGE_NAME}:${IMAGE_TAG}", "-f docker/Dockerfile .")
+                    docker.build("${IMAGE_NAME}:latest",       "-f docker/Dockerfile .")
+                }
+            }
+        }
+
+        stage('Docker Push') {
+            steps {
+                script {
+                    docker.withRegistry('https://registry.hub.docker.com', 'dockerhub-credentials') {
+                        docker.image("${IMAGE_NAME}:${IMAGE_TAG}").push()
+                        docker.image("${IMAGE_NAME}:latest").push()
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            when { branch 'main' }
+            steps {
+                withKubeConfig([credentialsId: 'k8s-kubeconfig']) {
+                    sh """
+                        # Update image tag in deployment
+                        sed -i 's|IMAGE_PLACEHOLDER|${IMAGE_NAME}:${IMAGE_TAG}|g' k8s/deployment.yaml
+
+                        # Apply all manifests
+                        kubectl apply -f k8s/ -n ${K8S_NAMESPACE}
+
+                        # Wait for rollout
+                        kubectl rollout status deployment/${APP_NAME} \
+                            -n ${K8S_NAMESPACE} \
+                            --timeout=120s
+                    """
+                }
+            }
+        }
+
+        stage('Health Check') {
+            when { branch 'main' }
+            steps {
+                script {
+                    sleep(time: 15, unit: 'SECONDS')
+                    def healthStatus = sh(
+                        script: """
+                            kubectl exec -n ${K8S_NAMESPACE} \
+                                \$(kubectl get pod -n ${K8S_NAMESPACE} -l app=${APP_NAME} \
+                                    -o jsonpath='{.items[0].metadata.name}') \
+                                -- curl -sf http://localhost:8080/health | grep -c 'UP'
+                        """,
+                        returnStatus: true
+                    )
+                    if (healthStatus != 0) {
+                        error("Health check failed! Triggering rollback...")
+                    }
+                    echo "✅ Health check passed"
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            slackSend(
+                channel: env.SLACK_CHANNEL,
+                color:   'good',
+                message: """✅ *DEPLOYED SUCCESSFULLY*
+App: `${APP_NAME}` | Build: `#${BUILD_NUMBER}`
+Image: `${IMAGE_NAME}:${IMAGE_TAG}`
+Branch: `${env.BRANCH_NAME}` | Author: `${env.GIT_AUTHOR}`
+Commit: _${env.GIT_MESSAGE}_
+<${BUILD_URL}|View Build>"""
+            )
+        }
+
+        failure {
+            script {
+                // Auto rollback on deploy failure
+                if (env.BRANCH_NAME == 'main') {
+                    withKubeConfig([credentialsId: 'k8s-kubeconfig']) {
+                        sh """
+                            echo "🔄 Rolling back deployment..."
+                            kubectl rollout undo deployment/${APP_NAME} -n ${K8S_NAMESPACE}
+                            kubectl rollout status deployment/${APP_NAME} -n ${K8S_NAMESPACE} --timeout=60s
+                        """
+                    }
+                }
+            }
+            slackSend(
+                channel: env.SLACK_CHANNEL,
+                color:   'danger',
+                message: """❌ *PIPELINE FAILED*
+App: `${APP_NAME}` | Build: `#${BUILD_NUMBER}`
+Branch: `${env.BRANCH_NAME}` | Stage: `${env.STAGE_NAME}`
+Rollback: triggered automatically
+<${BUILD_URL}/console|View Logs>"""
+            )
+        }
+
+        unstable {
+            slackSend(
+                channel: env.SLACK_CHANNEL,
+                color:   'warning',
+                message: "⚠️ *UNSTABLE BUILD* — `${APP_NAME}` #${BUILD_NUMBER} — Test failures detected. <${BUILD_URL}|Details>"
+            )
+        }
+
+        always {
+            cleanWs()
+        }
+    }
+}

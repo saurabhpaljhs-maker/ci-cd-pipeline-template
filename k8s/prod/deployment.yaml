@@ -1,0 +1,210 @@
+# ============================================================
+# K8s Production Manifests — demo-app
+# Includes: Deployment, Service, HPA, PodDisruptionBudget
+# ============================================================
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-app
+  namespace: production
+  labels:
+    app: demo-app
+    env: production
+    version: "IMAGE_PLACEHOLDER"
+  annotations:
+    kubernetes.io/change-cause: "Deployed IMAGE_PLACEHOLDER via Jenkins"
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app: demo-app
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0        # Zero downtime deploy
+  template:
+    metadata:
+      labels:
+        app: demo-app
+        env: production
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/actuator/prometheus"
+        prometheus.io/port: "8080"
+    spec:
+      serviceAccountName: demo-app-sa
+
+      # Spread pods across nodes
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app: demo-app
+
+      containers:
+      - name: demo-app
+        image: IMAGE_PLACEHOLDER
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+
+        env:
+        - name: SPRING_PROFILES_ACTIVE
+          value: "production"
+        - name: APP_ENV
+          value: "production"
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+
+        envFrom:
+        - configMapRef:
+            name: demo-app-config
+        - secretRef:
+            name: demo-app-secrets
+
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+
+        livenessProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 15
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /actuator/health/readiness
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          failureThreshold: 3
+
+        startupProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8080
+          failureThreshold: 12
+          periodSeconds: 10
+
+        # Security context — run as non-root
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 1000
+          capabilities:
+            drop: ["ALL"]
+
+        volumeMounts:
+        - name: tmp-dir
+          mountPath: /tmp
+
+      volumes:
+      - name: tmp-dir
+        emptyDir: {}
+
+      # Grace period for in-flight requests
+      terminationGracePeriodSeconds: 60
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-app
+  namespace: production
+  labels:
+    app: demo-app
+spec:
+  selector:
+    app: demo-app
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+    protocol: TCP
+  type: ClusterIP
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: demo-app-hpa
+  namespace: production
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: demo-app
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300    # Wait 5 min before scaling down
+      policies:
+      - type: Pods
+        value: 1
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+      - type: Pods
+        value: 2
+        periodSeconds: 60
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: demo-app-pdb
+  namespace: production
+spec:
+  minAvailable: 2           # Always keep at least 2 pods running during node drain
+  selector:
+    matchLabels:
+      app: demo-app
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: demo-app-config
+  namespace: production
+data:
+  SERVER_PORT: "8080"
+  SPRING_PROFILES_ACTIVE: "production"
+  LOG_LEVEL: "INFO"
+  MANAGEMENT_ENDPOINTS_ENABLED: "true"
